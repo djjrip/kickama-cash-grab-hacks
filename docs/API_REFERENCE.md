@@ -36,6 +36,43 @@ For development, use:
 http://localhost:8080/api/v3
 ```
 
+## Config Generator Schema
+
+`tools/config_generator.py` validates configuration overrides and generated
+configuration before writing output. The default JSON Schema lives at
+`data/config_generator.schema.json`.
+
+Override files are JSON or YAML objects whose top-level keys match supported
+configuration sections:
+
+```json
+{
+  "app": {
+    "log_level": "info"
+  },
+  "server": {
+    "port": 8081
+  }
+}
+```
+
+Generate a config with the default schema:
+
+```bash
+python3 tools/config_generator.py --env staging --overrides config/override.json --format json
+```
+
+Use an alternate JSON Schema:
+
+```bash
+python3 tools/config_generator.py --schema config/custom-schema.json --overrides config/override.json
+```
+
+Validation reports all discovered errors before exiting non-zero. Error paths
+use dot notation, for example `server.port` or `app.log_level`. Generated JSON
+is parsed and validated after rendering; generated YAML is parsed and validated
+when PyYAML is installed.
+
 ## Authentication
 
 Most endpoints require authentication via Bearer token:

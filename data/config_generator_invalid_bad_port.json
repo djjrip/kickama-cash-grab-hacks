@@ -1,0 +1,6 @@
+{
+  "server": {
+    "port": "not-an-integer",
+    "read_timeout": -1
+  }
+}

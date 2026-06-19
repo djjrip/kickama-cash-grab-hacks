@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -170,10 +171,130 @@ SENSITIVE_KEYS = [
     "database.password", "redis.password", "auth.jwt_secret",
     "auth.jwt_secret", "auth.jwt_secret",
 ]
+DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "data" / "config_generator.schema.json"
+
+
+def format_path(path: str) -> str:
+    return path or "<root>"
+
+
+def json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__
+
+
+def matches_schema_type(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return (isinstance(value, int) or isinstance(value, float)) and not isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    return True
+
+
+def validate_json_schema(data: Any, schema: Dict[str, Any], path: str = "") -> List[str]:
+    errors: List[str] = []
+
+    expected_type = schema.get("type")
+    if expected_type:
+        expected_types = expected_type if isinstance(expected_type, list) else [expected_type]
+        if not any(matches_schema_type(data, item) for item in expected_types):
+            errors.append(
+                f"{format_path(path)}: expected {expected_type}, got {json_type(data)}"
+            )
+            return errors
+
+    if "enum" in schema and data not in schema["enum"]:
+        allowed = ", ".join(repr(item) for item in schema["enum"])
+        errors.append(f"{format_path(path)}: expected one of {allowed}, got {data!r}")
+
+    if isinstance(data, (int, float)) and not isinstance(data, bool):
+        if "minimum" in schema and data < schema["minimum"]:
+            errors.append(f"{format_path(path)}: expected >= {schema['minimum']}, got {data}")
+        if "maximum" in schema and data > schema["maximum"]:
+            errors.append(f"{format_path(path)}: expected <= {schema['maximum']}, got {data}")
+
+    if isinstance(data, dict):
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
+        for key in required:
+            if key not in data:
+                child_path = f"{path}.{key}" if path else key
+                errors.append(f"{child_path}: required property is missing")
+
+        additional = schema.get("additionalProperties", True)
+        for key, value in data.items():
+            child_path = f"{path}.{key}" if path else key
+            if key in properties:
+                errors.extend(validate_json_schema(value, properties[key], child_path))
+            elif additional is False:
+                errors.append(f"{child_path}: additional property is not allowed")
+            elif isinstance(additional, dict):
+                errors.extend(validate_json_schema(value, additional, child_path))
+
+    if isinstance(data, list) and "items" in schema:
+        item_schema = schema["items"]
+        for index, item in enumerate(data):
+            errors.extend(validate_json_schema(item, item_schema, f"{path}[{index}]"))
+
+    return errors
+
+
+def load_json_file(path: Path) -> Any:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_data_file(path: Path) -> Any:
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        return load_json_file(path)
+    if suffix in (".yaml", ".yml"):
+        if not HAS_YAML:
+            raise RuntimeError("PyYAML is required to read YAML input files")
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    raise RuntimeError(f"Unsupported input file format for {path}; use JSON or YAML")
+
+
+def load_schema(path: str) -> Dict[str, Any]:
+    schema_path = Path(path)
+    schema = load_json_file(schema_path)
+    if not isinstance(schema, dict):
+        raise RuntimeError(f"Schema must be a JSON object: {schema_path}")
+    return schema
+
+
+def print_validation_errors(label: str, errors: List[str]) -> None:
+    print(f"{label} validation failed with {len(errors)} error(s):", file=sys.stderr)
+    for error in errors:
+        print(f"  - {error}", file=sys.stderr)
 
 
 def merge_config(base: Dict, override: Dict) -> Dict:
-    result = dict(base)
+    result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = merge_config(result[key], value)
@@ -309,6 +430,10 @@ def parse_args():
                        choices=["yaml", "json", "toml", "dotenv", "k8s-configmap"],
                        help="Output format")
     parser.add_argument("--output", "-o", help="Output file path")
+    parser.add_argument("--overrides",
+                       help="JSON or YAML config override file to merge before rendering")
+    parser.add_argument("--schema", default=str(DEFAULT_SCHEMA_PATH),
+                       help="JSON Schema file used to validate overrides and generated config")
     parser.add_argument("--show-sensitive", action="store_true",
                        help="Show sensitive values (default: masked)")
     parser.add_argument("--stdout", action="store_true",
@@ -318,7 +443,32 @@ def parse_args():
 
 def main():
     args = parse_args()
-    config = generate_config(args.env)
+    try:
+        schema = load_schema(args.schema)
+    except Exception as exc:
+        print(f"Failed to load schema: {exc}", file=sys.stderr)
+        return 1
+
+    overrides = None
+    if args.overrides:
+        try:
+            overrides = load_data_file(Path(args.overrides))
+        except Exception as exc:
+            print(f"Failed to load overrides: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(overrides, dict):
+            print("Override input must be a JSON or YAML object", file=sys.stderr)
+            return 1
+        override_errors = validate_json_schema(overrides, schema)
+        if override_errors:
+            print_validation_errors(f"Input {args.overrides}", override_errors)
+            return 1
+
+    config = generate_config(args.env, overrides)
+    generated_errors = validate_json_schema(config, schema)
+    if generated_errors:
+        print_validation_errors("Generated config", generated_errors)
+        return 1
 
     if not args.show_sensitive:
         display_config = mask_sensitive(config)
@@ -339,10 +489,27 @@ def main():
         return 1
 
     output = output_fn(display_config)
+    if args.format == "json":
+        try:
+            rendered = json.loads(output)
+        except json.JSONDecodeError as exc:
+            print(f"Generated JSON could not be parsed: {exc}", file=sys.stderr)
+            return 1
+        rendered_errors = validate_json_schema(rendered, schema)
+        if rendered_errors:
+            print_validation_errors("Rendered JSON", rendered_errors)
+            return 1
+    elif args.format == "yaml" and HAS_YAML:
+        rendered = yaml.safe_load(output)
+        rendered_errors = validate_json_schema(rendered, schema)
+        if rendered_errors:
+            print_validation_errors("Rendered YAML", rendered_errors)
+            return 1
+
     if args.stdout or not args.output:
         print(output)
     else:
-        with open(args.output, "w") as f:
+        with open(args.output, "w", encoding="utf-8") as f:
             f.write(output)
         print(f"Configuration written to {args.output}")
 
@@ -350,4 +517,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

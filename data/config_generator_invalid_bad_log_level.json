@@ -1,0 +1,6 @@
+{
+  "app": {
+    "debug": "yes",
+    "log_level": "verbose"
+  }
+}
