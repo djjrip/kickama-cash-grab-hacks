@@ -293,6 +293,40 @@ def print_validation_errors(label: str, errors: List[str]) -> None:
         print(f"  - {error}", file=sys.stderr)
 
 
+def qualify_validation_errors(label: str, errors: List[str]) -> List[str]:
+    return [f"{label}.{error}" for error in errors]
+
+
+def validate_internal_configs(
+    schema: Dict[str, Any],
+    default_config: Optional[Dict[str, Any]] = None,
+    env_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[str]:
+    """Validate built-in defaults and every environment overlay before generation."""
+    defaults = default_config if default_config is not None else DEFAULT_CONFIG
+    overrides = env_overrides if env_overrides is not None else ENV_OVERRIDES
+
+    errors = qualify_validation_errors(
+        "DEFAULT_CONFIG",
+        validate_json_schema(defaults, schema),
+    )
+    for env, env_override in overrides.items():
+        errors.extend(
+            qualify_validation_errors(
+                f"ENV_OVERRIDES.{env}",
+                validate_json_schema(env_override, schema),
+            )
+        )
+        generated = merge_config(defaults, env_override)
+        errors.extend(
+            qualify_validation_errors(
+                f"generated.{env}",
+                validate_json_schema(generated, schema),
+            )
+        )
+    return errors
+
+
 def merge_config(base: Dict, override: Dict) -> Dict:
     result = copy.deepcopy(base)
     for key, value in override.items():
@@ -447,6 +481,11 @@ def main():
         schema = load_schema(args.schema)
     except Exception as exc:
         print(f"Failed to load schema: {exc}", file=sys.stderr)
+        return 1
+
+    internal_errors = validate_internal_configs(schema)
+    if internal_errors:
+        print_validation_errors("Internal configuration", internal_errors)
         return 1
 
     overrides = None

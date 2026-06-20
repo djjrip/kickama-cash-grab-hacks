@@ -7,6 +7,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import config_generator
+
 
 ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = ROOT / "tools" / "config_generator.py"
@@ -78,10 +80,38 @@ def validate_custom_schema() -> None:
         assert_contains_all(result.stderr, ["app.name", "custom-app"])
 
 
+def validate_internal_config_checks() -> None:
+    schema = config_generator.load_schema(str(ROOT / "data" / "config_generator.schema.json"))
+
+    errors = config_generator.validate_internal_configs(
+        schema,
+        default_config={
+            **config_generator.DEFAULT_CONFIG,
+            "server": {**config_generator.DEFAULT_CONFIG["server"], "port": "bad-port"},
+        },
+        env_overrides={
+            **config_generator.ENV_OVERRIDES,
+            "production": {
+                **config_generator.ENV_OVERRIDES["production"],
+                "app": {
+                    **config_generator.ENV_OVERRIDES["production"]["app"],
+                    "environment": "prod",
+                },
+            },
+        },
+    )
+
+    assert_contains_all(
+        "\n".join(errors),
+        ["DEFAULT_CONFIG.server.port", "ENV_OVERRIDES.production.app.environment"],
+    )
+
+
 def main() -> None:
     validate_invalid_fixtures()
     validate_generated_json()
     validate_custom_schema()
+    validate_internal_config_checks()
     print("config_generator schema validation checks passed")
 
 
