@@ -19,6 +19,7 @@ DIAGNOSTIC_DIR = ROOT / "diagnostic"
 DIAGNOSTIC_CHUNK_SIZE = 40 * 1024 * 1024
 ENCRYPTLY_BLOCKER_MESSAGE = "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly."
 TEXT_ENCODING = "utf-8"
+JSON_LOGS = False
 
 
 def configure_text_encoding() -> None:
@@ -55,6 +56,18 @@ def run_text_process(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[st
 
 
 configure_text_encoding()
+
+
+def emit_json_log(event: str, **fields) -> None:
+    """Emit one structured JSON log line when --json-logs is enabled."""
+    if not JSON_LOGS:
+        return
+    payload = {
+        "event": event,
+        "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+        **fields,
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
 
 
 def current_commit_id() -> str:
@@ -346,6 +359,14 @@ def build_module(
     verbose: bool = False,
 ) -> tuple[bool, float, str]:
 
+    emit_json_log(
+        "module_start",
+        module=module.name,
+        language=module.language,
+        directory=str(module.dir.relative_to(ROOT)) if module.dir.is_relative_to(ROOT) else str(module.dir),
+        command=module.build_cmd,
+        release=release,
+    )
     print(f"\n  {color('▸', Colors.CYAN)} Building {color(module.name, Colors.BOLD)} ({module.language})...")
 
     env = os.environ.copy()
@@ -434,9 +455,21 @@ def build_module(
     output = "\n".join(output_lines)
     success = result.returncode == 0
 
+    emit_json_log(
+        "module_result",
+        module=module.name,
+        success=success,
+        elapsed_seconds=round(elapsed, 3),
+        output_preview=output.strip().splitlines()[-3:] if output else [],
+    )
     return success, elapsed, output
 
 def clean_module(module: Module, verbose: bool = False) -> bool:
+    emit_json_log(
+        "clean_start",
+        module=module.name,
+        command=module.clean_cmd,
+    )
     print(f"  {color('▸', Colors.YELLOW)} Cleaning {module.name}...")
     try:
         run_text_process(
@@ -447,9 +480,11 @@ def clean_module(module: Module, verbose: bool = False) -> bool:
             timeout=60,
             env=os.environ.copy(),
         )
+        emit_json_log("clean_result", module=module.name, success=True)
         return True
     except Exception as e:
         print(f"    {color('✗', Colors.RED)} Clean failed: {e}")
+        emit_json_log("clean_result", module=module.name, success=False, error=str(e))
         return False
 
 def verify_binary(module: Module) -> Optional[str]:
@@ -580,6 +615,11 @@ def build_diagnostic_report(
 def write_diagnostic_report(metadata_path: Path, report: dict) -> None:
     metadata_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"    {color('✓', Colors.GREEN)} {metadata_path.relative_to(ROOT)} created")
+    emit_json_log(
+        "diagnostic_metadata_written",
+        path=str(metadata_path.relative_to(ROOT)),
+        commit=report.get("commit"),
+    )
 
 
 def commit_diagnostic_artifacts(paths: list[Path], commit_id: str) -> bool:
@@ -814,6 +854,13 @@ def print_summary(results: list[tuple[str, bool, float, str, Optional[str]]]):
           f"{color(str(passed) + ' passed', Colors.GREEN)}, "
           f"{color(str(failed) + ' failed', Colors.RED)}, "
           f"{total_time:.1f}s total")
+    emit_json_log(
+        "build_summary",
+        total_modules=total,
+        passed=passed,
+        failed=failed,
+        total_seconds=round(total_time, 3),
+    )
 
 def main():
     parser = argparse.ArgumentParser(
@@ -853,14 +900,41 @@ Diagnostic bundle:
         "--list", action="store_true",
         help="List available modules and exit",
     )
+    parser.add_argument(
+        "--json-logs", action="store_true",
+        help="Emit structured JSONL telemetry events in addition to the human-readable build output",
+    )
 
     args = parser.parse_args()
+    global JSON_LOGS
+    JSON_LOGS = args.json_logs
+
+    emit_json_log(
+        "build_start",
+        root=str(ROOT),
+        module=args.module,
+        clean=args.clean,
+        release=args.release,
+        verbose=args.verbose,
+    )
 
     print(f"\n  {color('Tent of Trials: building', Colors.CYAN)}")
     print(f"  Working directory: {ROOT}")
     print()
 
     if args.list:
+        emit_json_log(
+            "module_list",
+            modules=[
+                {
+                    "name": m.name,
+                    "language": m.language,
+                    "directory": str(m.dir.relative_to(ROOT)) if m.dir.is_relative_to(ROOT) else str(m.dir),
+                    "build_command": m.build_cmd,
+                }
+                for m in MODULES
+            ],
+        )
         print(f"  {color('Available modules:', Colors.BOLD)}")
         for m in MODULES:
             print(f"    {color(m.name, Colors.CYAN)} ({m.language})")
@@ -870,6 +944,11 @@ Diagnostic bundle:
 
     print(f"  {color('Checking prerequisites...', Colors.GRAY)}")
     missing = check_prerequisites()
+    emit_json_log(
+        "prerequisites_checked",
+        missing=missing,
+        missing_count=len(missing),
+    )
     if missing:
         print(f"\n  {color('⚠ Some tools missing  -  will try anyway:', Colors.YELLOW)}")
         for m in missing:
@@ -892,6 +971,7 @@ Diagnostic bundle:
 
     if not selected:
         print(f"  No modules selected.")
+        emit_json_log("build_complete", success=True, selected_modules=[])
         return 0
 
     if args.clean:
@@ -913,11 +993,18 @@ Diagnostic bundle:
                     artifact.unlink()
                 print(f"  {color('▸', Colors.YELLOW)} Removed {artifact.relative_to(ROOT)}")
         print(f"\n  {color('Clean complete.', Colors.GREEN)}")
+        emit_json_log("build_complete", success=True, mode="clean")
         return 0
 
     print(f"\n  {color('Checking encryptly diagnostics...', Colors.GRAY)}")
     encryptly_start = time.time()
     encryptly_ok, encryptly_message = check_encryptly_runs()
+    emit_json_log(
+        "encryptly_checked",
+        success=encryptly_ok,
+        message=encryptly_message,
+        elapsed_seconds=round(time.time() - encryptly_start, 3),
+    )
     if not encryptly_ok:
         elapsed = time.time() - encryptly_start
         blocker = f"{ENCRYPTLY_BLOCKER_MESSAGE} {encryptly_message}"
@@ -941,7 +1028,14 @@ Diagnostic bundle:
 
     diagnostics_ok = generate_logd(results, args.verbose)
 
-    return 0 if diagnostics_ok and all(r[1] for r in results) else 1
+    success = diagnostics_ok and all(r[1] for r in results)
+    emit_json_log(
+        "build_complete",
+        success=success,
+        diagnostics_ok=diagnostics_ok,
+        selected_modules=[m.name for m in selected],
+    )
+    return 0 if success else 1
 
 if __name__ == "__main__":
     sys.exit(main())
