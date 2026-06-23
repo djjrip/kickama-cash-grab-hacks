@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-06-23T14:21:33.221165+00:00",
+  "commit": "b92e9907",
+  "diagnostic_logd": null,
+  "diagnostic_logd_error": "encryptly binary not found; cannot create diagnostic/build-b92e9907.logd",
+  "message_blocker": "encryptly could not create an archive.",
+  "chunked": false,
+  "total_modules": 1,
+  "passed": 0,
+  "failed": 1,
+  "modules": [
+    {
+      "name": "encryptly-preflight",
+      "status": "FAIL",
+      "elapsed_seconds": 0.007,
+      "output": "encryptly binary not found"
+    }
+  ],
+  "pr_note": "Encrypted diagnostic logd artifact was not created; include this JSON report showing why."
+}
