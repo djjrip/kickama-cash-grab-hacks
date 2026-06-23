@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-06-23T14:15:28.806347+00:00",
+  "commit": "a50dd02f",
+  "diagnostic_logd": null,
+  "diagnostic_logd_error": "encryptly binary not found (detected unsupported); cannot create diagnostic/build-a50dd02f.logd",
+  "message_blocker": "encryptly could not create an archive. You may have timed out; try launching it in the background and waiting for it to finish with no timeout due to a bug in encryptly.",
+  "chunked": false,
+  "total_modules": 1,
+  "passed": 0,
+  "failed": 1,
+  "modules": [
+    {
+      "name": "encryptly-preflight",
+      "status": "FAIL",
+      "elapsed_seconds": 0.007,
+      "output": "encryptly binary not found"
+    }
+  ],
+  "pr_note": "Encrypted diagnostic logd artifact was not created; include this JSON report showing why."
+}
