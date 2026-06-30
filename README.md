@@ -10,6 +10,8 @@
 > Submit your plugins to the new official open-source engine repository, and you will earn a **70% revenue share** when users install your plugin on GG Loop Cloud:
 > 👉 **[GG Loop Empire Hub](https://github.com/djjrip/ggloop-empire-hub)**
 > 
+> 💬 **[Join the Official GG Loop Discord](https://discord.gg/ggloop) to coordinate your plugin builds and claim your rev-share!**
+>
 > Please read the `CONTRIBUTING.md` in the new repository. Thank you for building the free world with us.
 ***
 
